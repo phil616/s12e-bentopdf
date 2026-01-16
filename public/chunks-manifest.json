@@ -1,0 +1,5 @@
+{
+  "ghostscript-wasm/gs.wasm": 2,
+  "libreoffice-wasm/soffice.data.gz": 2,
+  "libreoffice-wasm/soffice.wasm.gz": 3
+}
