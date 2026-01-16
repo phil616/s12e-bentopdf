@@ -7,11 +7,9 @@ const __dirname = path.dirname(__filename);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 const LOCALES_DIR = path.resolve(__dirname, '../public/locales');
-const SITE_URL = process.env.SITE_URL || 'https://www.bentopdf.com';
+const SITE_URL = process.env.SITE_URL || 'https://pdf.dreamreflex.com';
 
-const languages = fs.readdirSync(LOCALES_DIR).filter((file) => {
-  return fs.statSync(path.join(LOCALES_DIR, file)).isDirectory();
-});
+const languages = ['zh'];
 
 const PRIORITY_MAP = {
   index: 1.0,
@@ -44,20 +42,16 @@ function getPriority(pageName) {
   return PRIORITY_MAP[pageName] || 0.7;
 }
 
-function buildUrl(lang, pageName) {
+function buildUrl(pageName) {
   const pagePath = pageName === 'index' ? '' : pageName;
-  if (lang === 'en') {
-    return pagePath ? `${SITE_URL}/${pagePath}` : SITE_URL;
-  }
-  return pagePath ? `${SITE_URL}/${lang}/${pagePath}` : `${SITE_URL}/${lang}`;
+  return pagePath ? `${SITE_URL}/${pagePath}` : SITE_URL;
 }
 
 function generateSitemap() {
-  console.log('🗺️  Generating multilingual sitemap...');
+  console.log('🗺️  Generating sitemap (Chinese only)...');
   console.log(`   SITE_URL: ${SITE_URL}`);
-  console.log(`   Languages: ${languages.join(', ')}`);
 
-  // Get all HTML files from dist root (English pages)
+  // Get all HTML files from dist root
   const htmlFiles = fs
     .readdirSync(DIST_DIR)
     .filter((file) => file.endsWith('.html'))
@@ -72,31 +66,15 @@ function generateSitemap() {
 
   for (const pageName of htmlFiles) {
     const priority = getPriority(pageName);
+    const url = buildUrl(pageName);
 
-    // Generate entry for each language
-    for (const lang of languages) {
-      const url = buildUrl(lang, pageName);
-
-      sitemap += `  <url>
+    sitemap += `  <url>
     <loc>${url}</loc>
     <lastmod>${today}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>${priority}</priority>
-`;
-
-      // Add hreflang alternates for all languages
-      for (const altLang of languages) {
-        const altUrl = buildUrl(altLang, pageName);
-        sitemap += `    <xhtml:link rel="alternate" hreflang="${altLang}" href="${altUrl}"/>
-`;
-      }
-
-      // Add x-default pointing to English
-      const defaultUrl = buildUrl('en', pageName);
-      sitemap += `    <xhtml:link rel="alternate" hreflang="x-default" href="${defaultUrl}"/>
   </url>
 `;
-    }
   }
 
   sitemap += `</urlset>
@@ -105,13 +83,11 @@ function generateSitemap() {
   const sitemapPath = path.join(DIST_DIR, 'sitemap.xml');
   fs.writeFileSync(sitemapPath, sitemap);
 
+  // We should also write to public so it's there for dev server if needed, though dist is main target
   const publicSitemapPath = path.resolve(__dirname, '../public/sitemap.xml');
   fs.writeFileSync(publicSitemapPath, sitemap);
 
-  const urlCount = htmlFiles.length * languages.length;
-  console.log(
-    `✅ Sitemap generated with ${urlCount} URLs (${htmlFiles.length} pages × ${languages.length} languages)`
-  );
+  console.log(`✅ Sitemap generated with ${htmlFiles.length} URLs`);
 }
 
 generateSitemap();
