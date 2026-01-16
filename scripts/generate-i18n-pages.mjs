@@ -120,11 +120,44 @@ async function generateI18nPages() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
       const keys = key.split('.');
-      let value = keys[0] === 'tools' ? tools : common;
 
-      // Navigate the object
-      for (let i = keys[0] === 'tools' ? 1 : 0; i < keys.length; i++) {
-        value = value ? value[keys[i]] : null;
+      let value = undefined;
+
+      // Try tools.json if key starts with 'tools'
+      // But only if we have more than just 'tools' (e.g. tools.mergePdf.name)
+      // And we check if the path actually exists in tools.json
+      if (keys[0] === 'tools' && keys.length > 1) {
+        let tValue = tools;
+        let validPath = true;
+        // Skip the first key 'tools'
+        for (let i = 1; i < keys.length; i++) {
+          if (tValue && tValue[keys[i]] !== undefined) {
+            tValue = tValue[keys[i]];
+          } else {
+            validPath = false;
+            break;
+          }
+        }
+        if (validPath && typeof tValue === 'string') {
+          value = tValue;
+        }
+      }
+
+      // If not found in tools.json, try common.json
+      if (value === undefined) {
+        let cValue = common;
+        let validPath = true;
+        for (let i = 0; i < keys.length; i++) {
+          if (cValue && cValue[keys[i]] !== undefined) {
+            cValue = cValue[keys[i]];
+          } else {
+            validPath = false;
+            break;
+          }
+        }
+        if (validPath && typeof cValue === 'string') {
+          value = cValue;
+        }
       }
 
       if (value) {
