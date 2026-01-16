@@ -1,6 +1,6 @@
 /**
  * LibreOffice WASM Converter Wrapper
- * 
+ *
  * Uses @matbee/libreoffice-converter package for document conversion.
  * Handles progress tracking and provides simpler API.
  */
@@ -8,11 +8,12 @@
 import { WorkerBrowserConverter } from '@matbee/libreoffice-converter/browser';
 
 const LIBREOFFICE_LOCAL_PATH = import.meta.env.BASE_URL + 'libreoffice-wasm/';
+const DIST_URL = import.meta.env.BASE_URL; // e.g. / or /my-app/
 
 export interface LoadProgress {
-    phase: 'loading' | 'initializing' | 'converting' | 'complete' | 'ready';
-    percent: number;
-    message: string;
+  phase: 'loading' | 'initializing' | 'converting' | 'complete' | 'ready';
+  percent: number;
+  message: string;
 }
 
 export type ProgressCallback = (progress: LoadProgress) => void;
@@ -20,141 +21,233 @@ export type ProgressCallback = (progress: LoadProgress) => void;
 // Singleton for converter instance
 let converterInstance: LibreOfficeConverter | null = null;
 
-export class LibreOfficeConverter {
-    private converter: WorkerBrowserConverter | null = null;
-    private initialized = false;
-    private initializing = false;
-    private basePath: string;
+// Helper to check and reconstruct split files
+async function getReconstructedFileUrl(
+  basePath: string,
+  fileName: string
+): Promise<string> {
+  const originalUrl = `${basePath}${fileName}`;
+  const manifestUrl = `${DIST_URL}chunks-manifest.json`;
 
-    constructor(basePath?: string) {
-        this.basePath = basePath || LIBREOFFICE_LOCAL_PATH;
+  try {
+    const manifestRes = await fetch(manifestUrl);
+    if (!manifestRes.ok) return originalUrl;
+
+    const manifest = await manifestRes.json();
+    // The manifest keys are relative paths like "libreoffice-wasm/soffice.wasm.gz"
+    // We need to match the requested file.
+    // Assuming basePath ends with /, and fileName is just the name.
+    // Let's try to construct the relative path that might be in the manifest.
+    // If basePath is absolute URL or starts with /, we need to be careful.
+    // The manifest keys are relative to the dist root.
+
+    // Extract the path relative to the root (remove leading slash if present)
+    let relativePath = originalUrl;
+    if (relativePath.startsWith(DIST_URL)) {
+      relativePath = relativePath.substring(DIST_URL.length);
+    }
+    if (relativePath.startsWith('/')) {
+      relativePath = relativePath.substring(1);
     }
 
-    async initialize(onProgress?: ProgressCallback): Promise<void> {
-        if (this.initialized) return;
+    const totalChunks = manifest[relativePath];
 
-        if (this.initializing) {
-            while (this.initializing) {
-                await new Promise(r => setTimeout(r, 100));
-            }
-            return;
-        }
-
-
-        this.initializing = true;
-        let progressCallback = onProgress; // Store original callback
-
-        try {
-            progressCallback?.({ phase: 'loading', percent: 0, message: 'Loading conversion engine...' });
-
-            this.converter = new WorkerBrowserConverter({
-                sofficeJs: `${this.basePath}soffice.js`,
-                sofficeWasm: `${this.basePath}soffice.wasm.gz`,
-                sofficeData: `${this.basePath}soffice.data.gz`,
-                sofficeWorkerJs: `${this.basePath}soffice.worker.js`,
-                browserWorkerJs: `${this.basePath}browser.worker.global.js`,
-                verbose: false,
-                onProgress: (info: { phase: string; percent: number; message: string }) => {
-                    if (progressCallback && !this.initialized) {
-                        const simplifiedMessage = `Loading conversion engine (${Math.round(info.percent)}%)...`;
-                        progressCallback({
-                            phase: info.phase as LoadProgress['phase'],
-                            percent: info.percent,
-                            message: simplifiedMessage
-                        });
-                    }
-                },
-                onReady: () => {
-                    console.log('[LibreOffice] Ready!');
-                },
-                onError: (error: Error) => {
-                    console.error('[LibreOffice] Error:', error);
-                },
-            });
-
-            await this.converter.initialize();
-            this.initialized = true;
-
-            // Call completion message
-            progressCallback?.({ phase: 'ready', percent: 100, message: 'Conversion engine ready!' });
-
-            // Null out the callback to prevent any late-firing progress updates
-            progressCallback = undefined;
-        } finally {
-            this.initializing = false;
-        }
+    if (!totalChunks) {
+      return originalUrl;
     }
 
-    isReady(): boolean {
-        return this.initialized && this.converter !== null;
+    console.log(
+      `[LibreOffice] Detected split file for ${fileName}, merging ${totalChunks} chunks...`
+    );
+
+    const chunks: Blob[] = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkUrl = `${originalUrl}.part${i + 1}`;
+      const chunkRes = await fetch(chunkUrl);
+      if (!chunkRes.ok) throw new Error(`Failed to fetch chunk ${chunkUrl}`);
+      chunks.push(await chunkRes.blob());
     }
 
-    async convertToPdf(file: File): Promise<Blob> {
-        if (!this.converter) {
-            throw new Error('Converter not initialized');
-        }
-
-        console.log(`[LibreOffice] Converting ${file.name} to PDF...`);
-        console.log(`[LibreOffice] File type: ${file.type}, Size: ${file.size} bytes`);
-
-        try {
-            console.log(`[LibreOffice] Reading file as ArrayBuffer...`);
-            const arrayBuffer = await file.arrayBuffer();
-            const uint8Array = new Uint8Array(arrayBuffer);
-            console.log(`[LibreOffice] File loaded, ${uint8Array.length} bytes`);
-
-            console.log(`[LibreOffice] Calling converter.convert() with buffer...`);
-            const startTime = Date.now();
-
-            // Detect input format - critical for CSV to apply import filters
-            const ext = file.name.split('.').pop()?.toLowerCase() || '';
-            console.log(`[LibreOffice] Detected format from extension: ${ext}`);
-
-            const result = await this.converter.convert(uint8Array, {
-                outputFormat: 'pdf',
-                inputFormat: ext as any, // Explicitly specify format for CSV import filters
-            }, file.name);
-
-            const duration = Date.now() - startTime;
-            console.log(`[LibreOffice] Conversion complete! Duration: ${duration}ms, Size: ${result.data.length} bytes`);
-
-            // Create a copy to avoid SharedArrayBuffer type issues
-            const data = new Uint8Array(result.data);
-            return new Blob([data], { type: result.mimeType });
-        } catch (error) {
-            console.error(`[LibreOffice] Conversion FAILED for ${file.name}:`, error);
-            console.error(`[LibreOffice] Error details:`, {
-                message: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined
-            });
-            throw error;
-        }
-    }
-
-    async wordToPdf(file: File): Promise<Blob> {
-        return this.convertToPdf(file);
-    }
-
-    async pptToPdf(file: File): Promise<Blob> {
-        return this.convertToPdf(file);
-    }
-
-    async excelToPdf(file: File): Promise<Blob> {
-        return this.convertToPdf(file);
-    }
-
-    async destroy(): Promise<void> {
-        if (this.converter) {
-            await this.converter.destroy();
-        }
-        this.converter = null;
-        this.initialized = false;
-    }
+    const blob = new Blob(chunks);
+    const objectUrl = URL.createObjectURL(blob);
+    console.log(
+      `[LibreOffice] Reconstructed ${fileName} (${blob.size} bytes) -> ${objectUrl}`
+    );
+    return objectUrl;
+  } catch (e) {
+    console.warn(
+      `[LibreOffice] Failed to check/load split file for ${fileName}, falling back to original URL`,
+      e
+    );
+    return originalUrl;
+  }
 }
 
-export function getLibreOfficeConverter(basePath?: string): LibreOfficeConverter {
-    if (!converterInstance) {
-        converterInstance = new LibreOfficeConverter(basePath);
+export class LibreOfficeConverter {
+  private converter: WorkerBrowserConverter | null = null;
+  private initialized = false;
+  private initializing = false;
+  private basePath: string;
+
+  constructor(basePath?: string) {
+    this.basePath = basePath || LIBREOFFICE_LOCAL_PATH;
+  }
+
+  async initialize(onProgress?: ProgressCallback): Promise<void> {
+    if (this.initialized) return;
+
+    if (this.initializing) {
+      while (this.initializing) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return;
     }
-    return converterInstance;
+
+    this.initializing = true;
+    let progressCallback = onProgress; // Store original callback
+
+    try {
+      progressCallback?.({
+        phase: 'loading',
+        percent: 0,
+        message: 'Loading conversion engine...',
+      });
+
+      const sofficeWasmUrl = await getReconstructedFileUrl(
+        this.basePath,
+        'soffice.wasm.gz'
+      );
+      const sofficeDataUrl = await getReconstructedFileUrl(
+        this.basePath,
+        'soffice.data.gz'
+      );
+
+      this.converter = new WorkerBrowserConverter({
+        sofficeJs: `${this.basePath}soffice.js`,
+        sofficeWasm: sofficeWasmUrl,
+        sofficeData: sofficeDataUrl,
+        sofficeWorkerJs: `${this.basePath}soffice.worker.js`,
+        browserWorkerJs: `${this.basePath}browser.worker.global.js`,
+        verbose: false,
+        onProgress: (info: {
+          phase: string;
+          percent: number;
+          message: string;
+        }) => {
+          if (progressCallback && !this.initialized) {
+            const simplifiedMessage = `Loading conversion engine (${Math.round(info.percent)}%)...`;
+            progressCallback({
+              phase: info.phase as LoadProgress['phase'],
+              percent: info.percent,
+              message: simplifiedMessage,
+            });
+          }
+        },
+        onReady: () => {
+          console.log('[LibreOffice] Ready!');
+        },
+        onError: (error: Error) => {
+          console.error('[LibreOffice] Error:', error);
+        },
+      });
+
+      await this.converter.initialize();
+      this.initialized = true;
+
+      // Call completion message
+      progressCallback?.({
+        phase: 'ready',
+        percent: 100,
+        message: 'Conversion engine ready!',
+      });
+
+      // Null out the callback to prevent any late-firing progress updates
+      progressCallback = undefined;
+    } finally {
+      this.initializing = false;
+    }
+  }
+
+  isReady(): boolean {
+    return this.initialized && this.converter !== null;
+  }
+
+  async convertToPdf(file: File): Promise<Blob> {
+    if (!this.converter) {
+      throw new Error('Converter not initialized');
+    }
+
+    console.log(`[LibreOffice] Converting ${file.name} to PDF...`);
+    console.log(
+      `[LibreOffice] File type: ${file.type}, Size: ${file.size} bytes`
+    );
+
+    try {
+      console.log(`[LibreOffice] Reading file as ArrayBuffer...`);
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      console.log(`[LibreOffice] File loaded, ${uint8Array.length} bytes`);
+
+      console.log(`[LibreOffice] Calling converter.convert() with buffer...`);
+      const startTime = Date.now();
+
+      // Detect input format - critical for CSV to apply import filters
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      console.log(`[LibreOffice] Detected format from extension: ${ext}`);
+
+      const result = await this.converter.convert(
+        uint8Array,
+        {
+          outputFormat: 'pdf',
+          inputFormat: ext as any, // Explicitly specify format for CSV import filters
+        },
+        file.name
+      );
+
+      const duration = Date.now() - startTime;
+      console.log(
+        `[LibreOffice] Conversion complete! Duration: ${duration}ms, Size: ${result.data.length} bytes`
+      );
+
+      // Create a copy to avoid SharedArrayBuffer type issues
+      const data = new Uint8Array(result.data);
+      return new Blob([data], { type: result.mimeType });
+    } catch (error) {
+      console.error(`[LibreOffice] Conversion FAILED for ${file.name}:`, error);
+      console.error(`[LibreOffice] Error details:`, {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
+    }
+  }
+
+  async wordToPdf(file: File): Promise<Blob> {
+    return this.convertToPdf(file);
+  }
+
+  async pptToPdf(file: File): Promise<Blob> {
+    return this.convertToPdf(file);
+  }
+
+  async excelToPdf(file: File): Promise<Blob> {
+    return this.convertToPdf(file);
+  }
+
+  async destroy(): Promise<void> {
+    if (this.converter) {
+      await this.converter.destroy();
+    }
+    this.converter = null;
+    this.initialized = false;
+  }
+}
+
+export function getLibreOfficeConverter(
+  basePath?: string
+): LibreOfficeConverter {
+  if (!converterInstance) {
+    converterInstance = new LibreOfficeConverter(basePath);
+  }
+  return converterInstance;
 }
